@@ -9,17 +9,20 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from ..models import Booking, RefundLog
+from ..timeutils import utc_now
 
 
-def log_refund(db: Session, booking: Booking, percent: int) -> RefundLog:
-    dollars = booking.price_cents / 100.0
-    refund_dollars = dollars * (percent / 100.0)
-    amount_cents = int(refund_dollars * 100)
+def calculate_refund_amount(price_cents: int, percent: int) -> int:
+    """Round to nearest cent with half-cent values rounding up."""
+    return (price_cents * percent + 50) // 100
+
+
+def log_refund(db: Session, booking: Booking, amount_cents: int) -> RefundLog:
     entry = RefundLog(
         booking_id=booking.id,
         amount_cents=amount_cents,
         status="processed",
-        processed_at=datetime.utcnow(),
+        processed_at=utc_now(),
     )
     db.add(entry)
     db.commit()

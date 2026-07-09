@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import os
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -19,9 +20,9 @@ from .database import get_db
 from .errors import AppError
 from .models import User
 
-# Access tokens presented to /auth/logout are recorded here so they can no
-# longer be used.
+_auth_lock = threading.Lock()
 _revoked_tokens: set[str] = set()
+_used_refresh_jtis: set[str] = set()
 
 _PBKDF2_ROUNDS = 100_000
 
@@ -47,7 +48,7 @@ def _now_ts() -> int:
 
 def create_access_token(user: User) -> str:
     iat = _now_ts()
-    lifetime = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+    lifetime = timedelta(seconds=ACCESS_TOKEN_EXPIRE_MINUTES * 60)
     payload = {
         "sub": str(user.id),
         "org": user.org_id,
@@ -77,13 +78,14 @@ def create_refresh_token(user: User) -> str:
 
 def decode_token(token: str) -> dict:
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM], leeway=10)
     except jwt.PyJWTError:
         raise AppError(401, "UNAUTHORIZED", "Invalid or expired token")
 
 
 def revoke_access_token(payload: dict) -> None:
-    _revoked_tokens.add(payload["jti"])
+    with _auth_lock:
+        _revoked_tokens.add(payload["jti"])
 
 
 def get_token_payload(request: Request) -> dict:
@@ -94,9 +96,23 @@ def get_token_payload(request: Request) -> dict:
     payload = decode_token(token)
     if payload.get("type") != "access":
         raise AppError(401, "UNAUTHORIZED", "Wrong token type")
-    if payload.get("sub") in _revoked_tokens:
-        raise AppError(401, "UNAUTHORIZED", "Token has been revoked")
+    
+    with _auth_lock:
+        if payload.get("jti") in _revoked_tokens:
+            raise AppError(401, "UNAUTHORIZED", "Token has been revoked")
+            
     return payload
+
+
+def consume_refresh_token(payload: dict) -> None:
+    jti = payload.get("jti")
+    if jti is None:
+        raise AppError(401, "UNAUTHORIZED", "Refresh token invalid")
+        
+    with _auth_lock:
+        if jti in _used_refresh_jtis:
+            raise AppError(401, "UNAUTHORIZED", "Refresh token already used or invalid")
+        _used_refresh_jtis.add(jti)
 
 
 def get_current_user(

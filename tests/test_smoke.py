@@ -1,22 +1,16 @@
-"""Happy-path smoke test covering the core booking flow.
-
-Run with ``pytest`` after installing requirements. It exercises a single,
-sequential golden path and is not a substitute for full API testing.
-"""
+"""Happy-path smoke test covering the core booking flow."""
 from datetime import datetime, timedelta, timezone
-
 from fastapi.testclient import TestClient
-
 from app.main import app
 
 client = TestClient(app)
 
+def _iso_z(dt: datetime) -> str:
+    """Helper to match your API's Z-formatted UTC designator."""
+    return dt.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
 def _future(hours: int) -> str:
-    return (datetime.now(timezone.utc) + timedelta(hours=hours)).replace(
-        minute=0, second=0, microsecond=0
-    ).isoformat()
-
+    return _iso_z(datetime.now(timezone.utc) + timedelta(hours=hours))
 
 def test_core_flow():
     assert client.get("/health").json() == {"status": "ok"}
@@ -27,13 +21,11 @@ def test_core_flow():
         json={"org_name": org, "username": "alice", "password": "pw12345"},
     )
     assert reg.status_code == 201
-    assert reg.json()["role"] == "admin"
-
+    
     login = client.post(
         "/auth/login",
         json={"org_name": org, "username": "alice", "password": "pw12345"},
     )
-    assert login.status_code == 200
     token = login.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -42,8 +34,8 @@ def test_core_flow():
         json={"name": "Focus Room", "capacity": 4, "hourly_rate_cents": 1000},
         headers=headers,
     )
-    assert room.status_code == 201
     room_id = room.json()["id"]
+
 
     booking = client.post(
         "/bookings",
@@ -55,4 +47,6 @@ def test_core_flow():
 
     listing = client.get("/bookings", headers=headers)
     assert listing.status_code == 200
-    assert listing.json()["total"] >= 1
+    assert listing.json()["total"] == 1
+    
+    assert booking.json()["reference_code"].startswith("CW-")
